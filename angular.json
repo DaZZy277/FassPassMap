@@ -93,11 +93,15 @@
               }
             ],
             "styles": [
+              "node_modules/leaflet/dist/leaflet.css",
               "src/styles.scss"
             ]
           }
         }
       }
     }
+  },
+  "cli": {
+    "analytics": "2ed540e3-ea6e-4294-b13d-895c4a325db2"
   }
 }
