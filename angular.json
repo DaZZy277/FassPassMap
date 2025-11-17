@@ -29,12 +29,13 @@
                 "input": "public"
               },
               {
-                "glob": "**/images/*",
+                "glob": "images/*",
                 "input": "node_modules/leaflet/dist/",
                 "output": "assets"
               }
             ],
             "styles": [
+              "node_modules/leaflet/dist/leaflet.css",
               "src/styles.scss"
             ],
             "server": "src/main.server.ts",
@@ -97,7 +98,7 @@
                 "input": "public"
               },
               {
-                "glob": "**/images/*",
+                "glob": "images/*",
                 "input": "node_modules/leaflet/dist/",
                 "output": "assets"
               }
