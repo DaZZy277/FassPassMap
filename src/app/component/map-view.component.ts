@@ -1,14 +1,25 @@
 import { Component, OnInit, PLATFORM_ID, Inject, OnDestroy, AfterViewInit } from '@angular/core';
 import { isPlatformBrowser } from '@angular/common';
 import { CommonModule } from '@angular/common';
-import * as L from 'leaflet'; 
-import 'leaflet/dist/leaflet.css';
+import { Subject, Subscription } from 'rxjs';
+import { debounceTime, distinctUntilChanged } from 'rxjs/operators';
 
-// Define a structured type for our target locations
+
+
 interface TargetLocation {
   name: string;
   latlng: [number, number];
   id: string;
+  description?: string; 
+}
+
+interface SearchResult {
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  isLocal?: boolean;
+  id?: string; // Added ID to track if it matches a saved target
 }
 
 @Component({
@@ -21,370 +32,149 @@ interface TargetLocation {
       <div id="map" class="map-canvas"></div>
 
       <div class="top-overlay-container">
-        <div class="search-bar">
-          <span class="search-icon">🔍</span>
-          <input 
-            type="text" 
-            placeholder="{{ isSearching ? 'Searching...' : 'Search for a location...' }}" 
-            class="search-input" 
-            #searchInput
-            (keyup.enter)="searchAndFocus(searchInput.value)"
-            [disabled]="isSearching"
-          >
-          <button 
-            class="search-btn" 
-            [disabled]="isSearching || !searchInput.value"
-            (click)="searchAndFocus(searchInput.value)"
-          >
-              {{ isSearching ? '...' : 'Go' }}
-          </button>
-          <span class="user-icon" (click)="focusOnUser()">📍</span>
+        <div class="search-wrapper">
+            <div class="search-bar">
+                <span class="search-icon">🔍</span>
+                <input 
+                    type="text" 
+                    placeholder="ค้นหาสถานที่..." 
+                    class="search-input" 
+                    #searchInput
+                    (input)="onSearchInput(searchInput.value)"
+                    (focus)="showSuggestions = true"
+                    [value]="currentSearchQuery"
+                >
+                <span *ngIf="currentSearchQuery" class="clear-icon" (click)="clearSearch()">✕</span>
+            </div>
+
+            <div class="search-suggestions" *ngIf="showSuggestions && (searchResults.length > 0 || isSearching)">
+                <div class="suggestion-item loading" *ngIf="isSearching">
+                    <span class="spinner-small"></span> กำลังค้นหา...
+                </div>
+                <div *ngFor="let result of searchResults" class="suggestion-item" (click)="selectSearchResult(result)">
+                    <span class="suggestion-icon">{{ result.isLocal ? '🏛️' : '📍' }}</span>
+                    <div class="suggestion-text">
+                        <div class="suggestion-name">{{ result.name }}</div>
+                        <div class="suggestion-address">{{ result.address }}</div>
+                    </div>
+                </div>
+            </div>
         </div>
-        <p *ngIf="searchError" class="search-error-message">
-            ⚠️ {{ searchError }}
-        </p>
       </div>
       
       <div class="fab-container">
-        <button class="location-fab" (click)="focusOnUser()" title="Center on My Location">
+        <button class="location-fab" (click)="focusOnUser()" title="ตำแหน่งปัจจุบัน">
           <span class="fab-icon">🎯</span>
         </button>
       </div>
 
-      <div 
-        class="bottom-overlay-container" 
-        [class.expanded]="isSheetExpanded"
-      >
+      <div class="bottom-overlay-container" [class.expanded]="isSheetExpanded">
         <div class="sliding-sheet">
             <div class="drag-handle-area" (click)="toggleSheet()">
                 <div class="drag-handle"></div>
-                <h3 class="toggle-title">
-                    <span class="status-icon">
-                        {{ isSheetExpanded ? '▼' : '▲' }}
-                    </span>
-                    {{ isSheetExpanded ? 'Collapse' : 'Expand Locations & Info' }}
-                </h3>
             </div>
             
-            <div class="user-details-section">
-                <h3 class="info-header">Your Current GPS Position</h3>
-                <div *ngIf="userGeoHash">
-                    <div class="data-row">
-                        <span class="label">Latitude:</span>
-                        <span class="value">{{ userLat?.toFixed(5) }}</span>
+            <div class="location-details-view" *ngIf="selectedLocation">
+                <div class="details-header">
+                    <button class="back-btn" (click)="clearSelection()">← กลับ</button>
+                    <h2 class="details-title">{{ selectedLocation.name }}</h2>
+                </div>
+                
+                <div class="details-content">
+                    <div class="detail-row">
+                        <span class="detail-icon">📍</span>
+                        <span class="detail-text">{{ selectedLocation.latlng[0].toFixed(5) }}, {{ selectedLocation.latlng[1].toFixed(5) }}</span>
                     </div>
-                    <div class="data-row">
-                        <span class="label">Longitude:</span>
-                        <span class="value">{{ userLng?.toFixed(5) }}</span>
+                    <div class="detail-row" *ngIf="selectedLocation.description">
+                        <span class="detail-icon">ℹ️</span>
+                        <span class="detail-text">{{ selectedLocation.description }}</span>
                     </div>
-                    <div class="data-row">
-                        <span class="label">GeoHash (P8):</span>
-                        <span class="value hash">{{ userGeoHash }}</span>
-                    </div>
-                    <div class="data-row">
-                        <a [href]="getGoogleMapsLink(userLat, userLng)" target="_blank" class="gmaps-link">Open in Google Maps ↗</a>
+                    
+                    <div class="action-buttons">
+                        <a [href]="getGoogleMapsLink(selectedLocation.latlng[0], selectedLocation.latlng[1])" 
+                           target="_blank" 
+                           class="primary-btn">
+                           เปิดใน Google Maps ↗
+                        </a>
                     </div>
                 </div>
-
-                <p *ngIf="!userGeoHash && !errorMessage" class="message loading-message">
-                    <span class="spinner"></span> Locating user and initializing map...
-                </p>
-                <p *ngIf="errorMessage" class="message error-message">
-                    ⚠️ {{ errorMessage }}
-                </p>
             </div>
-            
-            <hr class="separator">
 
-            <div class="location-list-section">
-                <h3 class="info-header">Saved Destinations</h3>
+            <div class="default-list-view" *ngIf="!selectedLocation">
+                <div class="section-header">
+                    <h3>สถานที่แนะนำ (KMITL)</h3>
+                </div>
                 <div class="location-list">
-                    <div *ngFor="let target of targets" class="list-item" (click)="focusOnTarget(target.latlng)">
-                        <span class="icon">🗺️</span>
-                        <div class="location-details">
-                            <span class="location-name">{{ target.name }}</span>
-                            <span class="location-coords">Lat: {{ target.latlng[0]?.toFixed(5) }}, Lng: {{ target.latlng[1]?.toFixed(5) }}</span>
+                    <div *ngFor="let target of targets" class="list-item" (click)="onLocationSelect(target)">
+                        <span class="list-icon">🏛️</span>
+                        <div class="list-text">
+                            <div class="list-name">{{ target.name }}</div>
+                            <div class="list-sub">สถาบันเทคโนโลยีพระจอมเกล้าเจ้าคุณทหารลาดกระบัง</div>
                         </div>
-                        <button class="focus-btn" (click)="$event.stopPropagation(); focusOnTarget(target.latlng)">
-                            Focus
-                        </button>
+                        <button class="navigate-btn">ดู</button>
                     </div>
                 </div>
+                
+                <div class="user-mini-status" *ngIf="userGeoHash">
+                    <small>ตำแหน่งของคุณ: {{ userLat?.toFixed(4) }}, {{ userLng?.toFixed(4) }} ({{ userGeoHash }})</small>
+                </div>
             </div>
+
         </div>
       </div>
     </div>
   `,
-  styles: [
-    `
-    .app-container {
-      width: 100vw;
-      height: 100vh;
-      position: relative; 
-      font-family: 'Roboto', sans-serif; 
-      overflow: hidden;
-    }
+  styles: [`
+    .app-container { width: 100vw; height: 100vh; position: relative; font-family: 'Sarabun', 'Roboto', sans-serif; overflow: hidden; background: #f8f9fa; }
+    #map { width: 100%; height: 100%; position: absolute; z-index: 10; }
+
+    .top-overlay-container { position: absolute; top: 0; left: 0; width: 100%; z-index: 20; padding-top: 16px; display: flex; justify-content: center; pointer-events: none; }
+    .search-wrapper { width: 90%; max-width: 400px; pointer-events: auto; position: relative; }
+    .search-bar { background: white; height: 48px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); display: flex; align-items: center; padding: 0 12px; }
+    .search-input { flex: 1; border: none; outline: none; font-size: 1rem; padding: 0 8px; color: #333; }
+    .search-icon, .clear-icon { font-size: 1.2rem; color: #5f6368; cursor: pointer; }
     
-    #map { 
-      width: 100%; 
-      height: 100%; 
-      position: absolute;
-      z-index: 10;
-    }
+    .search-suggestions { position: absolute; top: 56px; left: 0; width: 100%; background: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-height: 60vh; overflow-y: auto; }
+    .suggestion-item { padding: 12px 16px; border-bottom: 1px solid #f1f3f4; cursor: pointer; display: flex; align-items: center; }
+    .suggestion-item:hover { background: #f8f9fa; }
+    .suggestion-text { margin-left: 12px; }
+    .suggestion-name { font-weight: 500; font-size: 0.95rem; color: #202124; }
+    .suggestion-address { font-size: 0.8rem; color: #70757a; }
 
-    .top-overlay-container {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        z-index: 20;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        padding-top: 10px;
-    }
-    .search-bar {
-      width: 90vw;
-      max-width: 550px;
-      height: 50px;
-      background-color: #ffffff;
-      border-radius: 25px; 
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-      display: flex;
-      align-items: center;
-      padding: 0 10px 0 15px; 
-      pointer-events: auto;
-    }
-    .search-input {
-      flex-grow: 1;
-      border: none;
-      padding: 10px 10px;
-      font-size: 1rem;
-      color: #202124;
-      background: none;
-      outline: none;
-    }
-    .search-btn {
-        background: #4285f4;
-        color: white;
-        border: none;
-        padding: 8px 15px;
-        border-radius: 20px;
-        margin-left: 5px;
-        cursor: pointer;
-        transition: background-color 0.2s;
-        font-weight: 500;
-        pointer-events: auto;
-    }
-    .search-btn:disabled {
-        background: #aab9d2;
-        cursor: default;
-    }
-    .search-icon, .user-icon {
-      font-size: 1.2rem;
-      color: #70757a; 
-      cursor: pointer; 
-    }
-    .search-error-message {
-        background-color: #f8d7da;
-        color: #721c24;
-        border: 1px solid #f5c6cb;
-        padding: 8px 15px;
-        border-radius: 8px;
-        margin-top: 5px;
-        font-size: 0.9rem;
-        width: 90vw;
-        max-width: 550px;
-        text-align: center;
-        pointer-events: auto;
-    }
+    .fab-container { position: absolute; bottom: 180px; right: 16px; z-index: 20; pointer-events: none; }
+    .location-fab { width: 56px; height: 56px; background: white; border-radius: 50%; box-shadow: 0 4px 8px rgba(0,0,0,0.2); border: none; font-size: 1.5rem; cursor: pointer; pointer-events: auto; display: flex; align-items: center; justify-content: center; color: #1a73e8; }
 
-    .fab-container {
-      position: absolute;
-      bottom: 150px; 
-      right: 40px; 
-      z-index: 30; 
-      pointer-events: none; 
-      width: auto;
-      max-width: none;
-    }
-    .location-fab {
-      pointer-events: auto;
-      background-color: #ffffff;
-      color: #1a73e8; 
-      width: 56px;
-      height: 56px; 
-      border-radius: 50%;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
-      cursor: pointer;
-      font-size: 1.8rem; 
-    }
-
-    .bottom-overlay-container {
-        position: absolute;
-        bottom: 0; 
-        left: 0;
-        width: 100%;
-        z-index: 20; 
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        padding: 0;
-        pointer-events: none; 
-        transform: translateY(calc(100% - 80px));
-        transition: transform 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-    }
+    .bottom-overlay-container { position: absolute; bottom: 0; left: 0; width: 100%; z-index: 30; pointer-events: none; display: flex; justify-content: center; transform: translateY(calc(100% - 120px)); transition: transform 0.3s ease-out; }
+    .bottom-overlay-container.expanded { transform: translateY(0); }
     
-    .bottom-overlay-container.expanded {
-        transform: translateY(-420px); 
-    }
-
-    .sliding-sheet {
-        width: 95vw;
-        max-width: 550px;
-        background-color: #ffffff;
-        border-radius: 12px 12px 0 0; 
-        box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.2);
-        padding: 0;
-        pointer-events: auto; 
-        max-height: 500px; 
-        overflow-y: auto;
-    }
+    .sliding-sheet { width: 100%; max-width: 500px; background: white; border-radius: 16px 16px 0 0; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); padding-bottom: 20px; pointer-events: auto; max-height: 80vh; display: flex; flex-direction: column; }
     
-    .drag-handle-area {
-        padding: 10px 0 5px;
-        text-align: center;
-        cursor: pointer;
-        user-select: none;
-        position: sticky; 
-        top: 0;
-        background: white;
-        z-index: 10;
-        border-radius: 12px 12px 0 0;
-    }
-    .drag-handle {
-        width: 40px;
-        height: 4px;
-        background-color: #ccc;
-        border-radius: 2px;
-        margin: 0 auto;
-    }
-    .toggle-title {
-        font-size: 0.9rem;
-        color: #70757a;
-        margin-top: 5px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-    .status-icon {
-        margin-right: 5px;
-        transition: transform 0.3s;
-    }
+    .drag-handle-area { padding: 12px; display: flex; justify-content: center; cursor: pointer; background: white; border-radius: 16px 16px 0 0; flex-shrink: 0; }
+    .drag-handle { width: 32px; height: 4px; background: #dfe1e5; border-radius: 2px; }
 
-    .user-details-section, .location-list-section {
-        padding: 15px;
-    }
-    .user-details-section {
-        padding-bottom: 5px;
-    }
-    .location-list-section {
-        padding-top: 5px;
-    }
-    .separator {
-        border: none;
-        border-top: 1px solid #eee;
-        margin: 0 15px;
-    }
+    .location-details-view { padding: 0 20px 20px; }
+    .details-header { display: flex; align-items: center; margin-bottom: 16px; }
+    .back-btn { background: none; border: none; color: #1a73e8; font-size: 0.9rem; cursor: pointer; padding: 0; margin-right: 12px; font-weight: 500; }
+    .details-title { font-size: 1.25rem; margin: 0; color: #202124; }
+    .detail-row { display: flex; align-items: center; margin-bottom: 12px; color: #5f6368; font-size: 0.95rem; }
+    .detail-icon { margin-right: 12px; min-width: 24px; text-align: center; }
+    .primary-btn { display: block; width: 100%; padding: 10px 0; background: #1a73e8; color: white; text-align: center; border-radius: 24px; text-decoration: none; font-weight: 500; margin-top: 16px; }
 
-    .info-header {
-      color: #1a73e8; 
-      font-weight: 600;
-      padding-bottom: 8px;
-      margin-top: 0;
-      margin-bottom: 15px;
-      font-size: 1rem;
-    }
-    .data-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 6px 0;
-    }
-    .label {
-      font-weight: 400;
-      color: #5f6368; 
-    }
-    .value {
-      font-weight: 500;
-      color: #202124;
-    }
-    .hash {
-      font-family: 'monospace';
-      color: #1e8e3e; 
-    }
-    .gmaps-link {
-        color: #1a73e8;
-        text-decoration: none;
-        font-size: 0.9rem;
-        font-weight: 500;
-        margin-top: 5px;
-    }
-    .gmaps-link:hover {
-        text-decoration: underline;
-    }
-    .list-item {
-        display: flex;
-        align-items: center;
-        padding: 10px 0;
-        cursor: pointer;
-        border-bottom: 1px solid #eee;
-    }
-    .list-item:last-child {
-        border-bottom: none;
-    }
-    .focus-btn {
-        background-color: #4285f4; 
-        color: white;
-        border: none;
-        padding: 6px 12px;
-        border-radius: 4px;
-        cursor: pointer;
-        font-weight: 500;
-        font-size: 0.9rem;
-    }
-    .message {
-      padding: 12px;
-      margin-top: 15px;
-      border-radius: 8px;
-      text-align: center;
-      font-weight: 600;
-    }
-    .loading-message {
-      background-color: #e9f7fe;
-      color: #007bff;
-    }
-    .error-message {
-      background-color: #f8d7da;
-      color: #721c24;
-      border: 1px solid #f5c6cb;
-    }
-    .spinner {
-      border: 2px solid #cce5ff;
-      border-top: 2px solid #007bff;
-      border-radius: 50%;
-      width: 14px;
-      height: 14px;
-      animation: spin 1s linear infinite;
-      display: inline-block;
-      margin-right: 8px;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    `
-  ]
+    .section-header { padding: 0 20px 8px; border-bottom: 1px solid #f1f3f4; }
+    .section-header h3 { margin: 0; font-size: 1rem; color: #202124; }
+    .location-list { overflow-y: auto; flex-grow: 1; }
+    .list-item { padding: 12px 20px; display: flex; align-items: center; border-bottom: 1px solid #f1f3f4; cursor: pointer; }
+    .list-item:hover { background: #f8f9fa; }
+    .list-icon { font-size: 1.2rem; margin-right: 16px; }
+    .list-text { flex: 1; }
+    .list-name { font-weight: 500; color: #3c4043; font-size: 0.95rem; }
+    .list-sub { font-size: 0.8rem; color: #70757a; }
+    .navigate-btn { background: #e8f0fe; color: #1967d2; border: none; padding: 6px 12px; border-radius: 16px; font-size: 0.8rem; font-weight: 500; cursor: pointer; }
+    
+    .user-mini-status { padding: 8px 20px; border-top: 1px solid #eee; color: #70757a; font-size: 0.75rem; text-align: center; background: #f8f9fa; }
+    .spinner-small { width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #1a73e8; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; margin-right: 8px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  `]
 })
 export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
     
@@ -392,18 +182,29 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
     private userMarker: any;
     private searchMarker: any; 
     private ngeohash: any;
-    private geoHashBounds: any;
     private updateInterval: any;
-    private targetMarkers: any[] = [];
     
     isSheetExpanded: boolean = false; 
     isSearching: boolean = false; 
-    searchError: string | null = null; 
+    showSuggestions: boolean = false;
+    currentSearchQuery: string = '';
+    searchError: string | null = null;
+    searchResults: SearchResult[] = [];
+    selectedLocation: TargetLocation | null = null;
+
+    private searchSubject = new Subject<string>();
+    private searchSubscription: Subscription | null = null;
 
     readonly targets: TargetLocation[] = [
-        { name: 'Original Target', latlng: [13.72766661420566, 100.77253069896474], id: 'target_0' },
-        { name: 'New Target 1 (East)', latlng: [13.725834545795538, 100.77736063726306], id: 'target_1' },
-        { name: 'New Target 2 (West)', latlng: [13.725872896441372, 100.77386981149033], id: 'target_2' }
+        { name: 'อาคารเรียนรวม 12 ชั้น (E12)', latlng: [13.727792, 100.772519], id: 'kmitl_e12', description: 'ตึกเรียนรวมคณะวิศวกรรมศาสตร์' },
+        { name: 'คณะเทคโนโลยีสารสนเทศ (IT)', latlng: [13.729722, 100.775000], id: 'kmitl_it', description: 'ตึกกระจกริมน้ำ' },
+        { name: 'สำนักหอสมุดกลาง (CL)', latlng: [13.726944, 100.775278], id: 'kmitl_cl', description: 'ศูนย์การเรียนรู้และห้องสมุด' },
+        { name: 'สำนักงานอธิการบดี', latlng: [13.729333, 100.776583], id: 'kmitl_president', description: 'ตึกกรมหลวงนราธิวาสราชนครินทร์' },
+        { name: 'หอประชุมเจ้าพระยาสุรวงษ์ฯ', latlng: [13.725694, 100.773889], id: 'kmitl_hall', description: 'หอประชุมใหญ่ สจล.' },
+        { name: 'คณะสถาปัตยกรรมศาสตร์', latlng: [13.725000, 100.776000], id: 'kmitl_arch', description: 'ริมทางรถไฟ' },
+        { name: 'รพ.พระจอมเกล้าเจ้าคุณทหาร', latlng: [13.723333, 100.776111], id: 'kmitl_hospital', description: 'ศูนย์การแพทย์' },
+        { name: 'อาคารพระเทพฯ (ตึกปฏิบัติการ)', latlng: [13.726600, 100.772200], id: 'kmitl_eng_labs', description: 'ศูนย์ปฏิบัติการวิศวกรรม' },
+        { name: 'อาคารเฉลิมพระเกียรติ 60 พรรษา', latlng: [13.726417, 100.777750], id: 'kmitl_60th', description: 'อาคารเรียนรวม' }
     ];
     
     userLat: number | null = null;
@@ -413,283 +214,245 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
     
     constructor(@Inject(PLATFORM_ID) private platformId: Object) {}
 
+    // --- Interactions ---
+
     public toggleSheet(): void {
         this.isSheetExpanded = !this.isSheetExpanded;
     }
 
-    public getGoogleMapsLink(lat: number | null, lng: number | null): string {
-        if (lat === null || lng === null) return '#';
+    public async onLocationSelect(target: TargetLocation): Promise<void> {
+        this.selectedLocation = target;
+        this.isSheetExpanded = true; 
+        
+        const L = await import('leaflet');
+        
+        if (this.map) {
+            this.map.flyTo(target.latlng, 18, { duration: 1.5 });
+            
+            // 🏆 FIX: Check if this location matches one of our saved targets
+            const isSavedLocation = this.targets.some(t => t.id === target.id);
+            
+            // Always remove previous search marker first
+            if (this.searchMarker) {
+                this.map.removeLayer(this.searchMarker);
+                this.searchMarker = undefined;
+            }
+
+            // Only add a red "Search Marker" if it's NOT a saved location
+            if (!isSavedLocation) {
+                this.addSearchMarker(L, target.latlng, target.name);
+            }
+        }
+    }
+
+    public clearSelection(): void {
+        this.selectedLocation = null;
+        // Optionally clear the search marker when going back, or keep it until new search
+    }
+
+    public getGoogleMapsLink(lat: number, lng: number): string {
         return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
     }
 
-    public async searchAndFocus(query: string): Promise<void> {
-        if (!query || this.isSearching) return;
+    // --- Search Logic ---
+
+    public onSearchInput(query: string): void {
+        this.currentSearchQuery = query;
+        this.showSuggestions = true;
+        if (!query || query.length < 2) {
+            this.searchResults = [];
+            return;
+        }
+        this.searchSubject.next(query);
+    }
+
+    public clearSearch(): void {
+        this.currentSearchQuery = '';
+        this.searchResults = [];
+        this.showSuggestions = false;
+    }
+
+    public async selectSearchResult(result: SearchResult): Promise<void> {
+        this.showSuggestions = false;
+        this.currentSearchQuery = result.name;
         
+        // If the result has an ID, use it (it's local). Otherwise give it a generic ID.
+        const targetId = result.id || 'search_result_' + Date.now();
+
+        const target: TargetLocation = {
+            name: result.name,
+            latlng: [result.lat, result.lng],
+            id: targetId,
+            description: result.address
+        };
+        
+        this.onLocationSelect(target);
+    }
+
+    private performSearch(query: string): void {
         this.isSearching = true;
         this.searchError = null;
+
+        const lowerQuery = query.toLowerCase();
+        const localMatches: SearchResult[] = this.targets
+            .filter(target => target.name.toLowerCase().includes(lowerQuery))
+            .map(target => ({
+                name: target.name,
+                address: 'KMITL',
+                lat: target.latlng[0],
+                lng: target.latlng[1],
+                isLocal: true,
+                id: target.id // Pass the ID so we know it's a saved location
+            }));
         
-        try {
-            const apiKey = ""; // REPLACE WITH YOUR KEY
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-            
-            const systemPrompt = "You are a specialized geocoding service. When given a location name, find its geographic coordinates. Respond ONLY with a single, clean JSON object containing the latitude and longitude, formatted as: { \"lat\": [number], \"lng\": [number] }. If coordinates cannot be found, respond with { \"error\": \"Location not found\" }.";
-            const userQuery = `Find the precise latitude and longitude coordinates for ${query}.`;
-            
-            const payload = {
-                contents: [{ parts: [{ text: userQuery }] }],
-                tools: [{ "google_search": {} }],
-                systemInstruction: { parts: [{ text: systemPrompt }] },
-                generationConfig: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            "lat": { "type": "NUMBER" },
-                            "lng": { "type": "NUMBER" },
-                            "error": { "type": "STRING" }
-                        }
-                    }
-                }
-            };
-            
-            const response = await this.fetchWithRetry(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            const result = await response.json();
+        this.searchResults = [...localMatches];
+        
+        const apiKey = ""; // ⚠️ API KEY REQUIRED
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+        
+        const systemPrompt = `
+            You are a location search assistant for Thailand.
+            Find up to 5 distinct real-world locations that match the user's query. 
+            Respond ONLY with a valid JSON ARRAY of objects. 
+            Each object must have: "name" (string), "address" (string), "lat" (number), "lng" (number).
+            If no locations found, return [].
+        `;
+        
+        const payload = {
+            contents: [{ parts: [{ text: `Find locations matching: "${query}"` }] }],
+            tools: [{ "google_search": {} }],
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            generationConfig: { responseMimeType: "application/json" }
+        };
+        
+        fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(response => response.json())
+        .then(result => {
             const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!jsonText) return;
             
-            if (!jsonText) {
-                this.searchError = 'Geocoding service returned an unexpected response.';
-                return;
-            }
-
-            const parsedJson = JSON.parse(jsonText);
+            const parsed = JSON.parse(jsonText);
+            const apiLocations: SearchResult[] = Array.isArray(parsed) ? parsed : (parsed.locations || []);
             
-            if (parsedJson.error) {
-                this.searchError = `Could not find a location for "${query}". Please try a different name.`;
-            } else if (typeof parsedJson.lat === 'number' && typeof parsedJson.lng === 'number') {
-                const L = await import('leaflet');
-                const location: [number, number] = [parsedJson.lat, parsedJson.lng];
-                
-                this.addSearchMarker(L, location, query);
-                this.map.flyTo(location, 16, { duration: 1.5 });
-                this.searchError = null; 
-            } else {
-                 this.searchError = 'Invalid coordinate data received.';
-            }
-
-        } catch (error) {
-            console.error('API Error:', error);
-            this.searchError = 'Failed to connect to the geocoding service.';
-        } finally {
+            // Append API results to local results
+            this.searchResults = [...localMatches, ...apiLocations];
+        })
+        .catch(error => {
+            console.error('Search API Error:', error);
+        })
+        .finally(() => {
             this.isSearching = false;
-        }
+        });
     }
-    
+
+    // --- Map Logic ---
+
     private addSearchMarker(L: any, location: [number, number], name: string): void {
-        if (this.searchMarker) {
-            this.map.removeLayer(this.searchMarker);
-        }
-        const searchIcon = L.icon({
-            iconUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23e37400" width="40px" height="40px"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>',
+        const icon = L.icon({
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png', // Red Pin
             iconSize: [40, 40],
             iconAnchor: [20, 40],
+            popupAnchor: [0, -40]
         });
-        
-        const gmapsLink = this.getGoogleMapsLink(location[0], location[1]);
-        
-        this.searchMarker = L.marker(location, { icon: searchIcon })
+
+        this.searchMarker = L.marker(location, { icon: icon })
             .addTo(this.map)
             .bindPopup(`
-                <b>Search Result: ${name}</b><br>
-                Lat: ${location[0].toFixed(5)}, Lng: ${location[1].toFixed(5)}<br>
-                <a href="${gmapsLink}" target="_blank" style="color: #1a73e8; text-decoration: none;">Open in Google Maps ↗</a>
+                <div style="text-align:center; font-family: 'Sarabun', sans-serif;">
+                    <b>${name}</b>
+                </div>
             `)
             .openPopup();
     }
-    
-    private async fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
-        for (let i = 0; i < maxRetries; i++) {
-            try {
-                const response = await fetch(url, options);
-                if (response.status !== 429) return response;
-                await new Promise(r => setTimeout(r, Math.pow(2, i) * 1000));
-            } catch (error) {
-                if (i === maxRetries - 1) throw error;
-                await new Promise(r => setTimeout(r, Math.pow(2, i) * 1000));
-            }
-        }
-        throw new Error('Max retries exceeded.');
-    }
 
-    // --- Lifecycle and Initialization ---
-    
     async ngOnInit(): Promise<void> {
         if (!isPlatformBrowser(this.platformId)) return;
+
+        this.searchSubscription = this.searchSubject.pipe(
+            debounceTime(500),
+            distinctUntilChanged()
+        ).subscribe(query => this.performSearch(query));
+
         const L = await import('leaflet');
         this.ngeohash = await import('ngeohash');
         
-        // *** FIX for Vercel Build: Point to the assets copied by angular.json ***
         const iconRetinaUrl = 'assets/images/marker-icon-2x.png';
         const iconUrl = 'assets/images/marker-icon.png';
         const shadowUrl = 'assets/images/marker-shadow.png';
-        
         if (L.Icon) {
-            const DefaultIcon = L.Icon.extend({
-              options: {
-                shadowUrl,
-                iconRetinaUrl,
-                iconUrl,
-                iconSize: [25, 41],
-                iconAnchor: [12, 41],
-              }
+            L.Marker.prototype.options.icon = new L.Icon({
+                iconUrl, iconRetinaUrl, shadowUrl,
+                iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], tooltipAnchor: [16, -28], shadowSize: [41, 41]
             });
-            L.Marker.prototype.options.icon = new DefaultIcon();
         }
 
-        // Initialize map but wait for geolocation
         this.initMap(L);
-        this.addTargetMarkers(L);
         this.startLocationInterval(L);
     }
-    
+
     ngAfterViewInit(): void {
         if (isPlatformBrowser(this.platformId) && this.map) {
-            setTimeout(() => {
-                if (this.map) this.map.invalidateSize();
-            }, 50);
+            setTimeout(() => this.map.invalidateSize(), 100);
         }
     }
-    
+
     ngOnDestroy(): void {
         if (this.updateInterval) clearInterval(this.updateInterval);
+        if (this.searchSubscription) this.searchSubscription.unsubscribe();
         if (this.map) this.map.remove(); 
     }
-    
+
     private initMap(L: any) {
-        // Default center (fallback) if geolocation fails
         const defaultCenter: [number, number] = [13.72766661420566, 100.77253069896474];
-        
-        this.map = L.map('map', {
-            center: defaultCenter, 
-            zoom: 14 
-        });
-        
+        this.map = L.map('map', { center: defaultCenter, zoom: 15, zoomControl: false });
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            attribution: '© OpenStreetMap'
         }).addTo(this.map);
         
-        setTimeout(() => {
-            if (this.map) this.map.invalidateSize();
-        }, 2000); 
-    }
-    
-    private addTargetMarkers(L: any) {
+        // Add markers for all saved targets (Blue/Default icons)
         const targetIcon = L.icon({
-            iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png', 
-            iconSize: [40, 40],
-            iconAnchor: [20, 40],
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png',
+            iconSize: [32, 32], iconAnchor: [16, 32]
         });
+        
         this.targets.forEach(target => {
-            const gmapsLink = this.getGoogleMapsLink(target.latlng[0], target.latlng[1]);
-            const marker = L.marker(target.latlng, { icon: targetIcon })
-                .addTo(this.map)
-                .bindPopup(`
-                    <b>${target.name}</b><br>
-                    Lat: ${target.latlng[0].toFixed(5)}, Lng: ${target.latlng[1].toFixed(5)}<br>
-                    <a href="${gmapsLink}" target="_blank" style="color: #1a73e8; text-decoration: none;">Open in Google Maps ↗</a>
-                `);
-            this.targetMarkers.push(marker);
+            const marker = L.marker(target.latlng, { icon: targetIcon }).addTo(this.map);
+            marker.on('click', () => this.onLocationSelect(target));
         });
     }
-    
+
     public focusOnUser(): void {
-        if (this.map && this.userLat !== null && this.userLng !== null) {
-            this.map.flyTo([this.userLat, this.userLng], 18, { duration: 1.5 });
-            this.isSheetExpanded = false; 
-        } else {
-            console.warn('User location not yet available.');
+        if (this.map && this.userLat) {
+            this.map.flyTo([this.userLat, this.userLng], 18);
+            this.selectedLocation = null; 
         }
     }
-    
-    public focusOnTarget(location: [number, number]): void {
-        if (this.map) {
-            this.map.flyTo(location, 17, { duration: 1.5 });
-            this.isSheetExpanded = false; 
-        }
-    }
-    
+
     private startLocationInterval(L: any) {
         const updateLocation = () => {
-            if (!navigator.geolocation) {
-                this.errorMessage = 'Geolocation is not supported by your browser.';
-                return;
-            }
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const lat = position.coords.latitude;
-                    const lng = position.coords.longitude;
-                    const hash = this.ngeohash.encode(lat, lng, 8); 
-                    
-                    // If this is the first location update, center the map on the user
-                    if (this.userLat === null && this.userLng === null) {
-                         this.map.setView([lat, lng], 16);
-                    }
-
-                    this.userLat = lat;
-                    this.userLng = lng;
-                    this.userGeoHash = hash;
-                    this.errorMessage = null; 
-                    
-                    const userLocation: [number, number] = [lat, lng];
-                    
-                    if (this.userMarker) this.map.removeLayer(this.userMarker);
-                    
+            if (!navigator.geolocation) return;
+            navigator.geolocation.getCurrentPosition(pos => {
+                this.userLat = pos.coords.latitude;
+                this.userLng = pos.coords.longitude;
+                this.userGeoHash = this.ngeohash.encode(this.userLat, this.userLng, 8);
+                
+                if (!this.userMarker) {
                     const userIcon = L.icon({
-                        iconUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%231a73e8" width="40px" height="40px"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3" fill="white"/></svg>',
-                        iconSize: [40, 40],
-                        iconAnchor: [20, 20],
+                        iconUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%234285F4" width="48px" height="48px"><circle cx="12" cy="12" r="8" stroke="white" stroke-width="2"/></svg>',
+                        iconSize: [24, 24], iconAnchor: [12, 12]
                     });
-                    
-                    const gmapsLink = this.getGoogleMapsLink(lat, lng);
-
-                    this.userMarker = L.marker(userLocation, { icon: userIcon })
-                        .addTo(this.map)
-                        .bindPopup(`
-                            <b>You are here</b><br>
-                            Lat: ${lat.toFixed(5)}, Lng: ${lng.toFixed(5)}<br>GeoHash: ${hash}<br>
-                            <a href="${gmapsLink}" target="_blank" style="color: #1a73e8; text-decoration: none;">Open in Google Maps ↗</a>
-                        `);
-                    
-                    if (this.geoHashBounds) this.map.removeLayer(this.geoHashBounds); 
-                    
-                    const boundsArray = this.ngeohash.decode_bbox(hash); 
-                    const bounds: L.LatLngBoundsExpression = [
-                        [boundsArray[0], boundsArray[1]], 
-                        [boundsArray[2], boundsArray[3]]  
-                    ];
-                    
-                    this.geoHashBounds = L.rectangle(bounds, {
-                        color: '#4285f4', 
-                        weight: 2,
-                        fillOpacity: 0.15, 
-                        fillColor: '#4285f4'
-                    }).addTo(this.map);
-                },
-                (error) => {
-                    console.error('Error getting location:', error);
-                    if (error.code === 1) {
-                        this.errorMessage = 'Geolocation permission denied.';
-                    } else {
-                        this.errorMessage = 'Could not retrieve location data.';
-                    }
-                },
-                { enableHighAccuracy: true }
-            );
+                    this.userMarker = L.marker([this.userLat, this.userLng], { icon: userIcon }).addTo(this.map);
+                    this.map.setView([this.userLat, this.userLng], 16);
+                } else {
+                    this.userMarker.setLatLng([this.userLat, this.userLng]);
+                }
+            }, err => {
+                this.errorMessage = "Cannot get location";
+            }, { enableHighAccuracy: true });
         };
         updateLocation();
         this.updateInterval = setInterval(updateLocation, 5000); 
