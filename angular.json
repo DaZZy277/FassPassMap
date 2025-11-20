@@ -101,6 +101,11 @@
                 "glob": "images/*",
                 "input": "node_modules/leaflet/dist/",
                 "output": "assets"
+              },
+              {
+                "glob": "**/*",
+                "input": "src/assets",
+                "output": "assets"
               }
             ],
             "styles": [

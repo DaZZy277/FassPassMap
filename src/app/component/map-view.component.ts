@@ -3,127 +3,128 @@ import { isPlatformBrowser } from '@angular/common';
 import { CommonModule } from '@angular/common';
 import { Subject, Subscription } from 'rxjs';
 import { debounceTime, distinctUntilChanged } from 'rxjs/operators';
-
-
+// We need to import the Leaflet type definitions for L, but we must NOT import the library itself statically.
+// import * as L from 'leaflet'; // ❌ This line must remain commented out or removed for SSR compatibility.
 
 interface TargetLocation {
-  name: string;
-  latlng: [number, number];
-  id: string;
-  description?: string; 
+  name: string;
+  latlng: [number, number];
+  id: string;
+  description?: string; 
 }
 
 interface SearchResult {
-  name: string;
-  address: string;
-  lat: number;
-  lng: number;
-  isLocal?: boolean;
-  id?: string; // Added ID to track if it matches a saved target
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  isLocal?: boolean;
+  id?: string; 
 }
 
 @Component({
-  selector: 'app-map',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
-    <div class="app-container">
-      
-      <div id="map" class="map-canvas"></div>
+  selector: 'app-map',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="app-container">
+      
+      <div id="map" class="map-canvas"></div>
 
-      <div class="top-overlay-container">
-        <div class="search-wrapper">
-            <div class="search-bar">
-                <span class="search-icon">🔍</span>
-                <input 
-                    type="text" 
-                    placeholder="ค้นหาสถานที่..." 
-                    class="search-input" 
-                    #searchInput
-                    (input)="onSearchInput(searchInput.value)"
-                    (focus)="showSuggestions = true"
-                    [value]="currentSearchQuery"
-                >
-                <span *ngIf="currentSearchQuery" class="clear-icon" (click)="clearSearch()">✕</span>
-            </div>
+      <div class="top-overlay-container">
+        <div class="search-wrapper">
+            <div class="search-bar">
+                <span class="search-icon">🔍</span>
+                <input 
+                    type="text" 
+                    placeholder="ค้นหาสถานที่..." 
+                    class="search-input" 
+                    #searchInput
+                    (input)="onSearchInput(searchInput.value)"
+                    (focus)="showSuggestions = true"
+                    [value]="currentSearchQuery"
+                >
+                <span *ngIf="currentSearchQuery" class="clear-icon" (click)="clearSearch()">✕</span>
+            </div>
 
-            <div class="search-suggestions" *ngIf="showSuggestions && (searchResults.length > 0 || isSearching)">
-                <div class="suggestion-item loading" *ngIf="isSearching">
-                    <span class="spinner-small"></span> กำลังค้นหา...
-                </div>
-                <div *ngFor="let result of searchResults" class="suggestion-item" (click)="selectSearchResult(result)">
-                    <span class="suggestion-icon">{{ result.isLocal ? '🏛️' : '📍' }}</span>
-                    <div class="suggestion-text">
-                        <div class="suggestion-name">{{ result.name }}</div>
-                        <div class="suggestion-address">{{ result.address }}</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-      </div>
-      
-      <div class="fab-container">
-        <button class="location-fab" (click)="focusOnUser()" title="ตำแหน่งปัจจุบัน">
-          <span class="fab-icon">🎯</span>
-        </button>
-      </div>
+            <div class="search-suggestions" *ngIf="showSuggestions && (searchResults.length > 0 || isSearching)">
+                <div class="suggestion-item loading" *ngIf="isSearching">
+                    <span class="spinner-small"></span> กำลังค้นหา...
+                </div>
+                <div *ngFor="let result of searchResults" class="suggestion-item" (click)="selectSearchResult(result)">
+                    <span class="suggestion-icon">{{ result.isLocal ? '🏛️' : '📍' }}</span>
+                    <div class="suggestion-text">
+                        <div class="suggestion-name">{{ result.name }}</div>
+                        <div class="suggestion-address">{{ result.address }}</div>
+                    </div>
+                </div>
+            </div>
+            <p *ngIf="searchError" class="search-error-message">⚠️ {{ searchError }}</p>
+        </div>
+      </div>
+      
+      <div class="fab-container">
+        <button class="location-fab" (click)="focusOnUser()" title="ตำแหน่งปัจจุบัน">
+          <span class="fab-icon">🎯</span>
+        </button>
+      </div>
 
-      <div class="bottom-overlay-container" [class.expanded]="isSheetExpanded">
-        <div class="sliding-sheet">
-            <div class="drag-handle-area" (click)="toggleSheet()">
-                <div class="drag-handle"></div>
-            </div>
-            
-            <div class="location-details-view" *ngIf="selectedLocation">
-                <div class="details-header">
-                    <button class="back-btn" (click)="clearSelection()">← กลับ</button>
-                    <h2 class="details-title">{{ selectedLocation.name }}</h2>
-                </div>
-                
-                <div class="details-content">
-                    <div class="detail-row">
-                        <span class="detail-icon">📍</span>
-                        <span class="detail-text">{{ selectedLocation.latlng[0].toFixed(5) }}, {{ selectedLocation.latlng[1].toFixed(5) }}</span>
-                    </div>
-                    <div class="detail-row" *ngIf="selectedLocation.description">
-                        <span class="detail-icon">ℹ️</span>
-                        <span class="detail-text">{{ selectedLocation.description }}</span>
-                    </div>
-                    
-                    <div class="action-buttons">
-                        <a [href]="getGoogleMapsLink(selectedLocation.latlng[0], selectedLocation.latlng[1])" 
-                           target="_blank" 
-                           class="primary-btn">
-                           เปิดใน Google Maps ↗
-                        </a>
-                    </div>
-                </div>
-            </div>
+      <div class="bottom-overlay-container" [class.expanded]="isSheetExpanded">
+        <div class="sliding-sheet">
+            <div class="drag-handle-area" (click)="toggleSheet()">
+                <div class="drag-handle"></div>
+            </div>
+            
+            <div class="location-details-view" *ngIf="selectedLocation">
+                <div class="details-header">
+                    <button class="back-btn" (click)="clearSelection()">← กลับ</button>
+                    <h2 class="details-title">{{ selectedLocation.name }}</h2>
+                </div>
+                
+                <div class="details-content">
+                    <div class="detail-row">
+                        <span class="detail-icon">📍</span>
+                        <span class="detail-text">{{ selectedLocation.latlng[0].toFixed(5) }}, {{ selectedLocation.latlng[1].toFixed(5) }}</span>
+                    </div>
+                    <div class="detail-row" *ngIf="selectedLocation.description">
+                        <span class="detail-icon">ℹ️</span>
+                        <span class="detail-text">{{ selectedLocation.description }}</span>
+                    </div>
+                    
+                    <div class="action-buttons">
+                        <a [href]="getGoogleMapsLink(selectedLocation.latlng[0], selectedLocation.latlng[1])" 
+                           target="_blank" 
+                           class="primary-btn">
+                           เปิดใน Google Maps ↗
+                        </a>
+                    </div>
+                </div>
+            </div>
 
-            <div class="default-list-view" *ngIf="!selectedLocation">
-                <div class="section-header">
-                    <h3>สถานที่แนะนำ (KMITL)</h3>
-                </div>
-                <div class="location-list">
-                    <div *ngFor="let target of targets" class="list-item" (click)="onLocationSelect(target)">
-                        <span class="list-icon">🏛️</span>
-                        <div class="list-text">
-                            <div class="list-name">{{ target.name }}</div>
-                            <div class="list-sub">สถาบันเทคโนโลยีพระจอมเกล้าเจ้าคุณทหารลาดกระบัง</div>
-                        </div>
-                        <button class="navigate-btn">ดู</button>
-                    </div>
-                </div>
-                
-                <div class="user-mini-status" *ngIf="userGeoHash">
-                    <small>ตำแหน่งของคุณ: {{ userLat?.toFixed(4) }}, {{ userLng?.toFixed(4) }} ({{ userGeoHash }})</small>
-                </div>
-            </div>
+            <div class="default-list-view" *ngIf="!selectedLocation">
+                <div class="section-header">
+                    <h3>สถานที่แนะนำ (KMITL)</h3>
+                </div>
+                <div class="location-list">
+                    <div *ngFor="let target of targets" class="list-item" (click)="onLocationSelect(target)">
+                        <span class="list-icon">🏛️</span>
+                        <div class="list-text">
+                            <div class="list-name">{{ target.name }}</div>
+                            <div class="list-sub">สถาบันเทคโนโลยีพระจอมเกล้าเจ้าคุณทหารลาดกระบัง</div>
+                        </div>
+                        <button class="navigate-btn">ดู</button>
+                    </div>
+                </div>
+                
+                <div class="user-mini-status" *ngIf="userGeoHash">
+                    <small>ตำแหน่งของคุณ: {{ userLat?.toFixed(4) }}, {{ userLng?.toFixed(4) }} ({{ userGeoHash }})</small>
+                </div>
+            </div>
 
-        </div>
-      </div>
-    </div>
-  `,
+        </div>
+      </div>
+    </div>
+  `,
   styles: [`
     .app-container { width: 100vw; height: 100vh; position: relative; font-family: 'Sarabun', 'Roboto', sans-serif; overflow: hidden; background: #f8f9fa; }
     #map { width: 100%; height: 100%; position: absolute; z-index: 10; }
@@ -140,6 +141,10 @@ interface SearchResult {
     .suggestion-text { margin-left: 12px; }
     .suggestion-name { font-weight: 500; font-size: 0.95rem; color: #202124; }
     .suggestion-address { font-size: 0.8rem; color: #70757a; }
+
+    .search-status { background: rgba(255,255,255,0.9); padding: 8px 15px; border-radius: 20px; margin-top: 5px; font-size: 0.85rem; color: #5f6368; box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: inline-flex; align-items: center; pointer-events: auto; }
+    .spinner-small { width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #1a73e8; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; margin-right: 8px; }
+    .search-error-message { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; padding: 8px 15px; border-radius: 8px; margin-top: 5px; font-size: 0.9rem; text-align: center; pointer-events: auto; }
 
     .fab-container { position: absolute; bottom: 180px; right: 16px; z-index: 20; pointer-events: none; }
     .location-fab { width: 56px; height: 56px; background: white; border-radius: 50%; box-shadow: 0 4px 8px rgba(0,0,0,0.2); border: none; font-size: 1.5rem; cursor: pointer; pointer-events: auto; display: flex; align-items: center; justify-content: center; color: #1a73e8; }
@@ -172,7 +177,6 @@ interface SearchResult {
     .navigate-btn { background: #e8f0fe; color: #1967d2; border: none; padding: 6px 12px; border-radius: 16px; font-size: 0.8rem; font-weight: 500; cursor: pointer; }
     
     .user-mini-status { padding: 8px 20px; border-top: 1px solid #eee; color: #70757a; font-size: 0.75rem; text-align: center; background: #f8f9fa; }
-    .spinner-small { width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #1a73e8; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; margin-right: 8px; }
     @keyframes spin { to { transform: rotate(360deg); } }
   `]
 })
@@ -182,6 +186,7 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
     private userMarker: any;
     private searchMarker: any; 
     private ngeohash: any;
+    private geoHashBounds: any;
     private updateInterval: any;
     
     isSheetExpanded: boolean = false; 
@@ -196,15 +201,16 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
     private searchSubscription: Subscription | null = null;
 
     readonly targets: TargetLocation[] = [
-        { name: 'อาคารเรียนรวม 12 ชั้น (E12)', latlng: [13.727792, 100.772519], id: 'kmitl_e12', description: 'ตึกเรียนรวมคณะวิศวกรรมศาสตร์' },
-        { name: 'คณะเทคโนโลยีสารสนเทศ (IT)', latlng: [13.729722, 100.775000], id: 'kmitl_it', description: 'ตึกกระจกริมน้ำ' },
-        { name: 'สำนักหอสมุดกลาง (CL)', latlng: [13.726944, 100.775278], id: 'kmitl_cl', description: 'ศูนย์การเรียนรู้และห้องสมุด' },
-        { name: 'สำนักงานอธิการบดี', latlng: [13.729333, 100.776583], id: 'kmitl_president', description: 'ตึกกรมหลวงนราธิวาสราชนครินทร์' },
-        { name: 'หอประชุมเจ้าพระยาสุรวงษ์ฯ', latlng: [13.725694, 100.773889], id: 'kmitl_hall', description: 'หอประชุมใหญ่ สจล.' },
-        { name: 'คณะสถาปัตยกรรมศาสตร์', latlng: [13.725000, 100.776000], id: 'kmitl_arch', description: 'ริมทางรถไฟ' },
-        { name: 'รพ.พระจอมเกล้าเจ้าคุณทหาร', latlng: [13.723333, 100.776111], id: 'kmitl_hospital', description: 'ศูนย์การแพทย์' },
-        { name: 'อาคารพระเทพฯ (ตึกปฏิบัติการ)', latlng: [13.726600, 100.772200], id: 'kmitl_eng_labs', description: 'ศูนย์ปฏิบัติการวิศวกรรม' },
-        { name: 'อาคารเฉลิมพระเกียรติ 60 พรรษา', latlng: [13.726417, 100.777750], id: 'kmitl_60th', description: 'อาคารเรียนรวม' }
+        // Updated coordinates (assumed to be correct based on previous user input)
+        { name: 'อาคารเรียนรวม 12 ชั้น (E12)', latlng: [13.727549228597026, 100.77255458246205], id: 'kmitl_e12', description: 'ตึกเรียนรวมคณะวิศวกรรมศาสตร์' },
+        { name: 'คณะเทคโนโลยีสารสนเทศ (IT)', latlng: [13.73110775313755, 100.78104593482931], id: 'kmitl_it', description: 'ตึกกระจกริมน้ำ' },
+        { name: 'สำนักหอสมุดกลาง (KLLC)', latlng: [13.727624181555798, 100.77868310812387], id: 'kmitl_cl', description: 'ศูนย์การเรียนรู้และห้องสมุด' },
+        { name: 'สำนักงานอธิการบดี', latlng: [13.731022304549109, 100.77766077763981], id: 'kmitl_president', description: 'ตึกกรมหลวงนราธิวาสราชนครินทร์' },
+        { name: 'หอประชุมเจ้าพระยาสุรวงษ์ฯ', latlng: [13.72664371810848, 100.7792703321349], id: 'kmitl_hall', description: 'หอประชุมใหญ่ สจล.' },
+        { name: 'คณะสถาปัตยกรรมศาสตร์', latlng: [13.725334824782951, 100.77746353790184], id: 'kmitl_arch', description: 'ริมทางรถไฟ' },
+        { name: 'รพ.พระจอมเกล้าเจ้าคุณทหาร', latlng: [13.732349221023322, 100.789629628721], id: 'kmitl_hospital', description: 'ศูนย์การแพทย์' },
+        { name: 'อาคารพระเทพฯ (ตึกปฏิบัติการ)', latlng: [13.730024512451434, 100.77683801915526], id: 'kmitl_eng_labs', description: 'ศูนย์ปฏิบัติการวิศวกรรม' },
+        { name: 'วิทยาลัยนวัตกรรมการผลิตขั้นสูง', latlng: [13.730062563193098, 100.77542709470409], id: 'kmitl_60th', description: 'อาคารเรียนรวม' }
     ];
     
     userLat: number | null = null;
@@ -224,21 +230,19 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
         this.selectedLocation = target;
         this.isSheetExpanded = true; 
         
+        // 1. Dynamic import of Leaflet
         const L = await import('leaflet');
         
         if (this.map) {
             this.map.flyTo(target.latlng, 18, { duration: 1.5 });
             
-            // 🏆 FIX: Check if this location matches one of our saved targets
             const isSavedLocation = this.targets.some(t => t.id === target.id);
             
-            // Always remove previous search marker first
             if (this.searchMarker) {
                 this.map.removeLayer(this.searchMarker);
                 this.searchMarker = undefined;
             }
 
-            // Only add a red "Search Marker" if it's NOT a saved location
             if (!isSavedLocation) {
                 this.addSearchMarker(L, target.latlng, target.name);
             }
@@ -247,10 +251,10 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
 
     public clearSelection(): void {
         this.selectedLocation = null;
-        // Optionally clear the search marker when going back, or keep it until new search
     }
 
     public getGoogleMapsLink(lat: number, lng: number): string {
+        // Corrected format for reliable Google Maps linking
         return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
     }
 
@@ -270,13 +274,17 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
         this.currentSearchQuery = '';
         this.searchResults = [];
         this.showSuggestions = false;
+        this.isSearching = false;
+        this.searchError = null;
+        if (this.searchMarker && this.map) {
+            this.map.removeLayer(this.searchMarker);
+        }
     }
 
     public async selectSearchResult(result: SearchResult): Promise<void> {
         this.showSuggestions = false;
         this.currentSearchQuery = result.name;
         
-        // If the result has an ID, use it (it's local). Otherwise give it a generic ID.
         const targetId = result.id || 'search_result_' + Date.now();
 
         const target: TargetLocation = {
@@ -302,12 +310,12 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
                 lat: target.latlng[0],
                 lng: target.latlng[1],
                 isLocal: true,
-                id: target.id // Pass the ID so we know it's a saved location
+                id: target.id 
             }));
         
         this.searchResults = [...localMatches];
         
-        const apiKey = ""; // ⚠️ API KEY REQUIRED
+        const apiKey = ""; // ⚠️ REPLACE WITH YOUR API KEY
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
         
         const systemPrompt = `
@@ -338,7 +346,6 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
             const parsed = JSON.parse(jsonText);
             const apiLocations: SearchResult[] = Array.isArray(parsed) ? parsed : (parsed.locations || []);
             
-            // Append API results to local results
             this.searchResults = [...localMatches, ...apiLocations];
         })
         .catch(error => {
@@ -349,11 +356,9 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
         });
     }
 
-    // --- Map Logic ---
-
     private addSearchMarker(L: any, location: [number, number], name: string): void {
         const icon = L.icon({
-            iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png', // Red Pin
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png', 
             iconSize: [40, 40],
             iconAnchor: [20, 40],
             popupAnchor: [0, -40]
@@ -369,36 +374,47 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
             .openPopup();
     }
 
-    async ngOnInit(): Promise<void> {
-        if (!isPlatformBrowser(this.platformId)) return;
+    // --- Lifecycle ---
 
+    ngOnInit(): void {
         this.searchSubscription = this.searchSubject.pipe(
             debounceTime(500),
             distinctUntilChanged()
         ).subscribe(query => this.performSearch(query));
+    }
 
-        const L = await import('leaflet');
-        this.ngeohash = await import('ngeohash');
+    async ngAfterViewInit(): Promise<void> {
+    if (isPlatformBrowser(this.platformId)) {
         
+        // 🏆 CRITICAL FIX: Safely import the Leaflet module and extract the core object.
+        const LeafletModule = await import('leaflet');
+        // This line attempts to get the object from .default (common ES module pattern) 
+        // or uses the module itself (commonJS pattern).
+        const L = (LeafletModule as any).default || LeafletModule; 
+        
+        this.ngeohash = await import('ngeohash');
+
+        // --- Leaflet Icon Fix (Kept from previous steps) ---
         const iconRetinaUrl = 'assets/images/marker-icon-2x.png';
         const iconUrl = 'assets/images/marker-icon.png';
         const shadowUrl = 'assets/images/marker-shadow.png';
+        
         if (L.Icon) {
-            L.Marker.prototype.options.icon = new L.Icon({
-                iconUrl, iconRetinaUrl, shadowUrl,
-                iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], tooltipAnchor: [16, -28], shadowSize: [41, 41]
+            const DefaultIcon = L.Icon.extend({
+                options: { 
+                    iconUrl, iconRetinaUrl, shadowUrl,
+                    iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+                }
             });
+            // Use the correctly defined L object to modify the prototype
+            L.Marker.prototype.options.icon = new (DefaultIcon as any)(); 
         }
+        // ----------------------------------------------------
 
         this.initMap(L);
         this.startLocationInterval(L);
     }
-
-    ngAfterViewInit(): void {
-        if (isPlatformBrowser(this.platformId) && this.map) {
-            setTimeout(() => this.map.invalidateSize(), 100);
-        }
-    }
+}
 
     ngOnDestroy(): void {
         if (this.updateInterval) clearInterval(this.updateInterval);
@@ -407,8 +423,21 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
     }
 
     private initMap(L: any) {
+        const mapElement = document.getElementById('map');
+        if (!mapElement) {
+            console.error('Map container not found!');
+            return; 
+        }
+        
         const defaultCenter: [number, number] = [13.72766661420566, 100.77253069896474];
+        
+        if (this.map) {
+            this.map.remove();
+            this.map = null; 
+        }
+
         this.map = L.map('map', { center: defaultCenter, zoom: 15, zoomControl: false });
+        
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap'
         }).addTo(this.map);
@@ -423,12 +452,20 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
             const marker = L.marker(target.latlng, { icon: targetIcon }).addTo(this.map);
             marker.on('click', () => this.onLocationSelect(target));
         });
+
+        // Use a timeout to ensure the map renders correctly (invalidateSize fix)
+        setTimeout(() => { 
+            if (this.map) {
+                this.map.invalidateSize(); 
+            }
+        }, 500); // 500ms is safer than 100ms or 50ms
     }
 
     public focusOnUser(): void {
         if (this.map && this.userLat) {
             this.map.flyTo([this.userLat, this.userLng], 18);
-            this.selectedLocation = null; 
+            this.selectedLocation = null;
+            this.isSheetExpanded = false;
         }
     }
 
@@ -440,16 +477,23 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
                 this.userLng = pos.coords.longitude;
                 this.userGeoHash = this.ngeohash.encode(this.userLat, this.userLng, 8);
                 
-                if (!this.userMarker) {
+                if (!this.userMarker && this.map) { 
                     const userIcon = L.icon({
                         iconUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%234285F4" width="48px" height="48px"><circle cx="12" cy="12" r="8" stroke="white" stroke-width="2"/></svg>',
                         iconSize: [24, 24], iconAnchor: [12, 12]
                     });
                     this.userMarker = L.marker([this.userLat, this.userLng], { icon: userIcon }).addTo(this.map);
                     this.map.setView([this.userLat, this.userLng], 16);
-                } else {
+                } else if (this.userMarker) {
                     this.userMarker.setLatLng([this.userLat, this.userLng]);
                 }
+                
+                // GeoHash bounds logic
+                if (this.geoHashBounds && this.map) this.map.removeLayer(this.geoHashBounds); 
+                const boundsArray = this.ngeohash.decode_bbox(this.userGeoHash); 
+                const bounds: L.LatLngBoundsExpression = [[boundsArray[0], boundsArray[1]], [boundsArray[2], boundsArray[3]]];
+                this.geoHashBounds = L.rectangle(bounds, { color: '#4285f4', weight: 2, fillOpacity: 0.15, fillColor: '#4285f4' }).addTo(this.map);
+
             }, err => {
                 this.errorMessage = "Cannot get location";
             }, { enableHighAccuracy: true });
