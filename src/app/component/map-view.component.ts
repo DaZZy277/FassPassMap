@@ -1,51 +1,57 @@
+// src/app/component/map-view.component.ts
+
 import { Component, OnInit, PLATFORM_ID, Inject, OnDestroy, AfterViewInit } from '@angular/core';
 import { isPlatformBrowser } from '@angular/common';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms'; 
 import { Subject, Subscription } from 'rxjs';
 import { debounceTime, distinctUntilChanged } from 'rxjs/operators';
-import * as L from 'leaflet'; 
-
-// --- Interfaces ---
-interface TargetLocation {
-  name: string;
-  latlng: [number, number];
-  id: string;
-  description?: string; 
-  color: string; 
-  distanceText?: string; 
-  distance?: number; // Numeric distance property
-  mapMarker?: any;
-  rank?: number;
-}
-
-interface SearchResult {
-  name: string;
-  address: string;
-  lat: number;
-  lng: number;
-  isLocal?: boolean;
-  id?: string; 
-}
-
-// NEW: Interface for Zone definition
-interface MapZone {
-    name: string;
-    hash: string; // GeoHash P5/P6 string defining the zone center/area
-    id: string;
-    zoomLevel: number;
-}
-
+// CRITICAL: NO STATIC LEAFLET IMPORT
+import { MapService, TargetLocation, MapZone, SearchResult, PositionMode, UniversityMode } from '../../services/map-service'; 
 
 @Component({
   selector: 'app-map',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, FormsModule],
   template: `
     <div class="app-container">
       
       <div id="map" class="map-canvas"></div>
 
       <div class="top-overlay-container">
+        
+        <div class="mode-control-wrapper university-selector">
+            <div class="mode-switch-group">
+                <button 
+                    [class.active]="mapService.universityMode === 'KMITL'" 
+                    (click)="switchUniversityMode('KMITL')"
+                >KMITL</button>
+                <button 
+                    [class.active]="mapService.universityMode === 'KMUTT'" 
+                    (click)="switchUniversityMode('KMUTT')"
+                >KMUTT</button>
+            </div>
+        </div>
+
+        <div class="mode-control-wrapper">
+            <div class="mode-switch-group">
+                <button 
+                    [class.active]="mapService.positionMode === 'GPS'" 
+                    (click)="setMode('GPS')"
+                >GPS (Auto)</button>
+                <button 
+                    [class.active]="mapService.positionMode === 'MANUAL'" 
+                    (click)="setMode('MANUAL')"
+                >Manual</button>
+            </div>
+            
+            <div *ngIf="mapService.positionMode === 'MANUAL'" class="manual-input-group">
+                <input type="number" placeholder="Latitude" [(ngModel)]="manualLat">
+                <input type="number" placeholder="Longitude" [(ngModel)]="manualLng">
+                <button (click)="submitManualPosition()">Apply</button>
+            </div>
+        </div>
+        
         <div class="search-wrapper">
             <div class="search-bar">
                 <span class="search-icon">🔍</span>
@@ -137,7 +143,7 @@ interface MapZone {
 
             <div class="default-list-view" *ngIf="!selectedLocation">
                 <div class="section-header">
-                    <h3>สถานที่แนะนำ (KMITL)</h3>
+                    <h3>สถานที่แนะนำ ({{ mapService.universityMode }})</h3>
                 </div>
                 <div class="location-list">
                     <div *ngFor="let target of targets" class="list-item" (click)="onLocationSelect(target)">
@@ -152,8 +158,8 @@ interface MapZone {
                     </div>
                 </div>
                 
-                <div class="user-mini-status" *ngIf="userGeoHash">
-                    <small>ตำแหน่งของคุณ: {{ userLat?.toFixed(4) }}, {{ userLng?.toFixed(4) }} ({{ userGeoHash }})</small>
+                <div class="user-mini-status" *ngIf="mapService.userGeoHash">
+                    <small>ตำแหน่งของคุณ: {{ mapService.userLat?.toFixed(4) }}, {{ mapService.userLng?.toFixed(4) }} ({{ mapService.userGeoHash }})</small>
                 </div>
             </div>
 
@@ -161,102 +167,20 @@ interface MapZone {
       </div>
     </div>
   `,
-  styles: [`
-    .app-container { width: 100vw; height: 100vh; height: 100dvh; position: relative; font-family: 'Sarabun', 'Roboto', sans-serif; overflow: hidden; background: #f8f9fa; }
-    #map { width: 100%; height: 100%; position: absolute; z-index: 10; }
+styleUrls: [`./map-view.component.css`]
 
-    .top-overlay-container { position: absolute; top: 0; left: 0; width: 100%; z-index: 20; padding-top: max(16px, env(safe-area-inset-top)); display: flex; flex-direction: column; align-items: center; pointer-events: none; }
-    .search-wrapper { width: 90%; max-width: 400px; pointer-events: auto; position: relative; }
-    .search-bar { background: white; height: 48px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); display: flex; align-items: center; padding: 0 12px; }
-    .search-input { flex: 1; border: none; outline: none; font-size: 1rem; padding: 0 8px; color: #333; }
-    .search-icon, .clear-icon { font-size: 1.2rem; color: #5f6368; cursor: pointer; }
-    
-    .search-suggestions { position: absolute; top: 56px; left: 0; width: 100%; background: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); max-height: 60vh; overflow-y: auto; }
-    .suggestion-item { padding: 12px 16px; border-bottom: 1px solid #f1f3f4; cursor: pointer; display: flex; align-items: center; }
-    .suggestion-item:hover { background: #f8f9fa; }
-    .suggestion-text { margin-left: 12px; }
-    .suggestion-name { font-weight: 500; font-size: 0.95rem; color: #202124; }
-    .suggestion-address { font-size: 0.8rem; color: #70757a; }
-    .suggestion-icon { margin-right: 12px; font-size: 1.1rem; color: #70757a; min-width: 24px; text-align: center; }
-
-    .search-status { background: rgba(255,255,255,0.9); padding: 8px 15px; border-radius: 20px; margin-top: 5px; font-size: 0.85rem; color: #5f6368; box-shadow: 0 2px 5px rgba(0,0,0,0.1); display: inline-flex; align-items: center; pointer-events: auto; }
-    .spinner-small { width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: #1a73e8; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; margin-right: 8px; }
-    .search-error-message { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6fb; padding: 8px 15px; border-radius: 8px; margin-top: 5px; font-size: 0.9rem; text-align: center; pointer-events: auto; }
-
-    .zone-selector-wrapper {
-        width: 90vw;
-        max-width: 400px;
-        margin-top: 10px;
-        display: flex;
-        align-items: center;
-        padding: 8px 12px;
-        background: rgba(255, 255, 255, 0.9);
-        border-radius: 8px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-        pointer-events: auto;
-    }
-    .zone-select {
-        flex: 1;
-        padding: 8px;
-        border: 1px solid #ccc;
-        border-radius: 4px;
-        font-size: 0.9rem;
-        appearance: none;
-        background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="%23333" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>') no-repeat right 8px center;
-        background-size: 16px;
-    }
-
-
-    .fab-container { position: absolute; bottom: calc(150px + env(safe-area-inset-bottom)); right: 16px; z-index: 20; pointer-events: none; }
-    .location-fab { width: 56px; height: 56px; background: white; border-radius: 50%; box-shadow: 0 4px 8px rgba(0,0,0,0.2); border: none; font-size: 1.5rem; cursor: pointer; pointer-events: auto; display: flex; align-items: center; justify-content: center; color: #1a73e8; }
-
-    .bottom-overlay-container { position: absolute; bottom: 0; left: 0; width: 100%; z-index: 30; pointer-events: none; display: flex; justify-content: center; padding-bottom: env(safe-area-inset-bottom); transform: translateY(calc(100% - 120px)); transition: transform 0.3s ease-out; }
-    .bottom-overlay-container.expanded { transform: translateY(0); }
-    
-    .sliding-sheet { width: 100%; max-width: 500px; background: white; border-radius: 16px 16px 0 0; box-shadow: 0 -8px 20px rgba(0,0,0,0.1); padding-bottom: 20px; pointer-events: auto; max-height: 80vh; display: flex; flex-direction: column; }
-    
-    .drag-handle-area { padding: 12px; display: flex; justify-content: center; cursor: pointer; background: white; border-radius: 16px 16px 0 0; flex-shrink: 0; }
-    .drag-handle { width: 32px; height: 4px; background: #dfe1e5; border-radius: 2px; }
-
-    .location-details-view { padding: 0 20px 20px; }
-    .details-header { display: flex; align-items: center; margin-bottom: 16px; }
-    .back-btn { background: none; border: none; color: #1a73e8; font-size: 0.9rem; cursor: pointer; padding: 0; margin-right: 12px; font-weight: 500; }
-    
-    .details-title-wrapper { display: flex; align-items: center; }
-    .color-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
-    .details-title { font-size: 1.25rem; margin: 0; color: #202124; }
-    
-    .detail-row { display: flex; align-items: center; margin-bottom: 12px; color: #5f6368; font-size: 0.95rem; }
-    .detail-icon { margin-right: 12px; min-width: 24px; text-align: center; }
-    .primary-btn { display: block; width: 100%; padding: 10px 0; background: #1a73e8; color: white; text-align: center; border-radius: 24px; text-decoration: none; font-weight: 500; margin-top: 16px; }
-
-    .section-header { padding: 0 20px 8px; border-bottom: 1px solid #f1f3f4; }
-    .section-header h3 { margin: 0; font-size: 1rem; color: #202124; }
-    .location-list { overflow-y: auto; flex-grow: 1; }
-    .list-item { padding: 12px 20px; display: flex; align-items: center; border-bottom: 1px solid #f1f3f4; cursor: pointer; }
-    .list-item:hover { background: #f8f9fa; }
-    
-    .list-rank { display: inline-flex; width: 28px; height: 28px; border-radius: 50%; background-color: #343a40; color: white; font-size: 0.9rem; font-weight: 700; align-items: center; justify-content: center; margin-right: 16px; flex-shrink: 0; }
-    .list-icon { font-size: 1.2rem; margin-right: 16px; min-width: 24px; } 
-    .list-text { flex: 1; }
-    .list-name { font-weight: 500; color: #3c4043; font-size: 0.95rem; }
-    .list-sub { font-size: 0.8rem; color: #70757a; display: flex; align-items: center; gap: 5px; } 
-    .distance-badge { display: inline-block; background-color: #e8f0fe; color: #1967d2; padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
-    .navigate-btn { background: #e8f0fe; color: #1967d2; border: none; padding: 6px 12px; border-radius: 16px; font-size: 0.8rem; font-weight: 500; cursor: pointer; }
-    
-    .user-mini-status { padding: 8px 20px; border-top: 1px solid #eee; color: #70757a; font-size: 0.75rem; text-align: center; background: #f8f9fa; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-  `]
 })
 export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
     
     private map: any;
     private userMarker: any;
     private searchMarker: any; 
-    private ngeohash: any;
     private geoHashBounds: any;
-    private watchId: number | null = null;
-    
+    private L: any; 
+    private targetsSubscription: Subscription | null = null;
+    private searchResultsSubscription: Subscription | null = null;
+    private isSearchingSubscription: Subscription | null = null;
+
     isSheetExpanded: boolean = false; 
     isSearching: boolean = false; 
     showSuggestions: boolean = false;
@@ -265,290 +189,292 @@ export class MapComponent implements OnInit, OnDestroy, AfterViewInit {
     searchResults: SearchResult[] = [];
     selectedLocation: TargetLocation | null = null;
 
+    targets: TargetLocation[] = []; 
+    zones: MapZone[] = []; 
+    
+    manualLat: number | null = 13.7280;
+    manualLng: number | null = 100.7765;
+
     private searchSubject = new Subject<string>();
-    private searchSubscription: Subscription | null = null;
 
-    // 🏆 FIX: Removed readonly from targets, added MapMarker property initialization
-    targets: TargetLocation[] = [
-        { name: 'อาคารเรียนรวม 12 ชั้น (E12)', latlng: [13.727549, 100.772554], id: 'kmitl_e12', description: 'ตึกเรียนรวมคณะวิศวกรรมศาสตร์', color: '#007bff' },
-        { name: 'คณะเทคโนโลยีสารสนเทศ (IT)', latlng: [13.731107, 100.781045], id: 'kmitl_it', description: 'ตึกกระจกริมน้ำ', color: '#28a745' },
-        { name: 'สำนักหอสมุดกลาง (KLLC)', latlng: [13.727624, 100.778683], id: 'kmitl_cl', description: 'ศูนย์การเรียนรู้และห้องสมุด', color: '#ffc107' },
-        { name: 'สำนักงานอธิการบดี', latlng: [13.731022, 100.777660], id: 'kmitl_president', description: 'ตึกกรมหลวงนราธิวาสราชนครินทร์', color: '#6f42c1' },
-        { name: 'หอประชุมเจ้าพระยาสุรวงษ์ฯ', latlng: [13.726643, 100.779270], id: 'kmitl_hall', description: 'หอประชุมใหญ่ สจล.', color: '#17a2b8' },
-        { name: 'คณะสถาปัตยกรรมศาสตร์', latlng: [13.725334, 100.777463], id: 'kmitl_arch', description: 'ริมทางรถไฟ', color: '#fd7e14' },
-        { name: 'รพ.พระจอมเกล้าเจ้าคุณทหาร', latlng: [13.732349, 100.789629], id: 'kmitl_hospital', description: 'ศูนย์การแพทย์', color: '#e83e8c' },
-        { name: 'อาคารพระเทพฯ (ตึกปฏิบัติการ)', latlng: [13.730024, 100.776838], id: 'kmitl_eng_labs', description: 'ศูนย์ปฏิบัติการวิศวกรรม', color: '#20c997' },
-        { name: 'วิทยาลัยนวัตกรรมการผลิตขั้นสูง', latlng: [13.730062, 100.775427], id: 'kmitl_60th', description: 'อาคารเรียนรวม', color: '#343a40' }
-    ];
-    
-    userLat: number | null = null;
-    userLng: number | null = null;
-    userGeoHash: string | null = null;
-    errorMessage: string | null = null; 
-    
-    constructor(@Inject(PLATFORM_ID) private platformId: Object) {}
-
-    // --------------------------------------------------------------------------------
-    // --- UTILITY FUNCTIONS ---
-    // --------------------------------------------------------------------------------
-
-    private createPinIcon(L: any, hexColor: string): any {
-        const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${hexColor}" width="32px" height="32px"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>`;
-        return L.icon({
-            iconUrl: `data:image/svg+xml;utf8,${encodeURIComponent(svgContent)}`,
-            iconSize: [32, 32], iconAnchor: [16, 32], popupAnchor: [0, -32]
-        });
+    constructor(
+        @Inject(PLATFORM_ID) private platformId: Object,
+        public mapService: MapService
+    ) {
+        this.zones = this.mapService.zones;
     }
 
-    private createUserIcon(L: any): any {
-        const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#4285F4" width="48px" height="48px"><circle cx="12" cy="12" r="8" stroke="white" stroke-width="2"/></svg>`;
-        return L.icon({
-            iconUrl: `data:image/svg+xml;utf8,${encodeURIComponent(svgContent)}`,
-            iconSize: [24, 24], iconAnchor: [12, 12]
-        });
-    }
-
-    private createRankedPinIcon(L: any, hexColor: string, rank: number): any {
-        const pinPath = "M20 0 C10 0 2 8 2 16 C2 24 10 38 20 40 C30 38 38 24 38 16 C38 8 30 0 20 0 Z";
-
-        const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40px" height="40px">
-            <path d="${pinPath}" fill="${hexColor}" stroke="white" stroke-width="2"/>
-            <text x="20" y="18" font-family="Roboto, sans-serif" font-size="14" fill="white" text-anchor="middle" font-weight="bold">${rank}</text>
-        </svg>`;
-
-        return L.icon({
-            iconUrl: `data:image/svg+xml;utf8,${encodeURIComponent(svgContent)}`,
-            iconSize: [40, 40],
-            iconAnchor: [20, 40], 
-            popupAnchor: [0, -38]
-        });
-    }
-
-    // --- Interactions ---
+    // --- INTERACTION METHODS (PUBLIC/UI) ---
     public toggleSheet(): void {
         this.isSheetExpanded = !this.isSheetExpanded;
+    }
+
+    public clearSelection(): void {
+        this.selectedLocation = null;
+    }
+    
+    public getGoogleMapsLink(lat: number, lng: number): string {
+        if (lat === null || lng === null) return '#';
+        return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
     }
 
     public async onLocationSelect(target: TargetLocation): Promise<void> {
         this.selectedLocation = target;
         this.isSheetExpanded = true; 
         
-        if (isPlatformBrowser(this.platformId)) {
-            const L = await import('leaflet');
-            
-            if (this.map) {
-                this.map.flyTo(target.latlng, 18, { duration: 1.5 });
-                const isSavedLocation = this.targets.some(t => t.id === target.id);
-                if (this.searchMarker) {
-                    this.map.removeLayer(this.searchMarker);
-                    this.searchMarker = undefined;
-                }
-                if (!isSavedLocation) {
-                    this.addSearchMarker(L, target.latlng, target.name);
-                }
+        if (isPlatformBrowser(this.platformId) && this.map && this.L) {
+            this.map.flyTo(target.latlng, 18, { duration: 1.5 });
+            if (this.searchMarker) {
+                this.map.removeLayer(this.searchMarker);
+                this.searchMarker = undefined;
             }
         }
     }
-
-    public clearSelection(): void {
-        this.selectedLocation = null;
-    }
-
-    public getGoogleMapsLink(lat: number, lng: number): string {
-        if (lat === null || lng === null) return '#';
-        return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
-    }
-
-    // --- Zone selector helpers (used by template) ---
-    // Minimal zone structure so template bindings compile.
-    zones: { name: string; hash: string; center: [number, number]; zoom?: number }[] = [
-        { name: 'Zone1', hash: 'w21z', center: [13.7275, 100.7776], zoom: 16 },
-        { name: 'Zone2', hash: 'w21y', center: [13.7300, 100.7768], zoom: 16 },
-        { name: 'Zone3', hash: 'w21x', center: [13.7276, 100.7786], zoom: 16 }
-    ];
-
-    /**
-     * Focus the map on the selected zone hash from the <select>.
-     * Called from the template: (change)="focusOnSelectedZone(zoneSelect.value)"
-     */
+    
     public async focusOnSelectedZone(hash: string): Promise<void> {
-        if (!hash) return;
-        const zone = this.zones.find(z => z.hash === hash);
-        if (!zone) return;
+        if (!hash || !this.map || !this.L || !this.mapService.isNgeohashInitialized()) return;
+        
+        const boundsArray = this.mapService.decodeGeoHashBounds(hash);
+        if (!boundsArray) return;
+        
+        const bounds: any = [
+            [boundsArray[0], boundsArray[1]], // [minLat, minLng]
+            [boundsArray[2], boundsArray[3]]  // [maxLat, maxLng]
+        ];
+        
+        this.map.fitBounds(bounds, { padding: [10, 10], duration: 1.2 });
+        this.isSheetExpanded = false;
 
-        if (isPlatformBrowser(this.platformId)) {
-            if (!this.map) {
-                // map may be initialized later; nothing to do if not present
-                return;
-            }
-
-            if (this.map && zone.center) {
-                const zoom = zone.zoom ?? 15;
-                this.map.flyTo(zone.center, zoom, { duration: 1.2 });
-            }
+        if (this.geoHashBounds) this.map.removeLayer(this.geoHashBounds);
+        this.geoHashBounds = this.L.rectangle(bounds, {
+            color: '#1a73e8',
+            weight: 3,
+            fillOpacity: 0.1,
+            fillColor: '#1a73e8'
+        }).addTo(this.map);
+    }
+    
+    public focusOnUser(): void {
+        if (this.map && this.mapService.userLat !== null && this.mapService.userLng !== null) {
+            this.map.flyTo([this.mapService.userLat, this.mapService.userLng], 18);
+            this.selectedLocation = null;
+            this.isSheetExpanded = false;
         }
     }
 
-    // --- Search Logic (Omitted) ---
+    // --- Search Logic Handlers (Delegating to service) ---
     public onSearchInput(query: string): void {
         this.currentSearchQuery = query;
         this.showSuggestions = true;
-        if (!query || query.length < 2) {
-            this.searchResults = [];
-            return;
-        }
-        this.searchSubject.next(query);
+        this.mapService.pushSearchQuery(query); 
     }
 
     public clearSearch(): void {
         this.currentSearchQuery = '';
         this.searchResults = [];
         this.showSuggestions = false;
-        this.isSearching = false;
-        this.searchError = null;
-        if (this.searchMarker && this.map) {
-            this.map.removeLayer(this.searchMarker);
-        }
+        this.mapService.pushSearchQuery('');
     }
-
+    
     public async selectSearchResult(result: SearchResult): Promise<void> {
         this.showSuggestions = false;
         this.currentSearchQuery = result.name;
-        const targetId = result.id || 'search_result_' + Date.now();
+        
         const target: TargetLocation = {
             name: result.name,
             latlng: [result.lat, result.lng],
-            id: targetId,
+            id: result.id || 'search_temp_pin',
             description: result.address,
-            color: '#FF0000'
+            color: result.isLocal ? (this.targets.find(t => t.id === result.id)?.color || '#FF0000') : '#FF0000',
+            distance: undefined,
+            mapMarker: undefined,
+            rank: undefined
         };
-        this.onLocationSelect(target);
+        
+        await this.onLocationSelect(target);
+
+        if (!result.isLocal && this.L && this.map) {
+            if (this.searchMarker) {
+                this.map.removeLayer(this.searchMarker);
+            }
+            const icon = this.mapService.createPinIcon(this.L, target.color);
+            this.searchMarker = this.L.marker(target.latlng, { icon: icon }).addTo(this.map)
+                .bindPopup(`<b>${target.name}</b>`).openPopup();
+        }
     }
 
-    private performSearch(query: string): void {
-        this.isSearching = true;
+    // --- Position Mode Logic ---
+    public setMode(mode: PositionMode): void {
+        if (this.mapService.positionMode === mode) return;
+
+        this.mapService.positionMode = mode;
+        
+        if (mode === 'GPS') {
+            if (this.L) {
+                this.mapService.startGeolocationTracking(this.L);
+            }
+        } else {
+            this.mapService.stopTracking(); 
+            if (this.L) {
+                this.submitManualPosition(); 
+            }
+        }
+    }
+
+    public submitManualPosition(): void {
+        if (!this.L || this.manualLat === null || this.manualLng === null) {
+            this.searchError = "Invalid coordinates.";
+            return;
+        }
         this.searchError = null;
-        // ... API logic omitted ...
-        this.isSearching = false;
+        this.mapService.setManualPosition(this.manualLat, this.manualLng, this.L);
+        this.focusOnUser(); 
+    }
+    
+    public switchUniversityMode(mode: UniversityMode): void {
+        if (this.L) {
+            this.mapService.switchUniversity(mode, this.L);
+            
+            this.clearAllMarkers();
+            this.initMarkers(this.L);
+            
+            const targetHash = (mode === 'KMITL' ? 'w4rwj' : 'w4rmw');
+            this.focusOnSelectedZone(targetHash);
+        }
+        this.clearSelection();
+    }
+    
+    private clearAllMarkers(): void {
+        if (this.map && this.L) {
+            this.targets.forEach(target => {
+                if (target.mapMarker) {
+                    this.map.removeLayer(target.mapMarker);
+                    target.mapMarker = undefined;
+                }
+            });
+            if (this.userMarker) {
+                this.map.removeLayer(this.userMarker);
+                this.userMarker = undefined;
+            }
+            if (this.geoHashBounds) {
+                this.map.removeLayer(this.geoHashBounds);
+                this.geoHashBounds = undefined;
+            }
+            if (this.searchMarker) {
+                this.map.removeLayer(this.searchMarker);
+                this.searchMarker = undefined;
+            }
+        }
     }
 
-    private addSearchMarker(L: any, location: [number, number], name: string): void {
-        if (!this.map) return;
-        const icon = this.createPinIcon(L, '#FF0000');
-        this.searchMarker = L.marker(location, { icon: icon }).addTo(this.map).bindPopup(`<b>${name}</b>`).openPopup();
+    private initMarkers(L_local: any): void {
+        this.targets = this.mapService.targetsSubject.getValue();
+
+        this.targets.forEach(target => {
+            const targetIcon = this.mapService.createRankedPinIcon(L_local, target.color || '#007bff', 0); 
+            const marker = L_local.marker(target.latlng, { icon: targetIcon }).addTo(this.map);
+            target.mapMarker = marker;
+            marker.on('click', () => this.onLocationSelect(target));
+        });
+        this.updateUserUI(L_local); 
     }
 
-    // --- Lifecycle ---
+
+    // --- CORE MAP & DATA FLOW ---
+    private initMap(L_local: any): boolean {
+        this.L = L_local;
+        const mapElement = document.getElementById('map');
+        if (!mapElement) { return false; }
+        const defaultCenter: [number, number] = [13.72766661420566, 100.77253069896474];
+        if (this.map) { this.map.remove(); this.map = null; }
+        this.map = L_local.map('map', { center: defaultCenter, zoom: 15, zoomControl: false });
+        L_local.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(this.map);
+        
+        this.targets = this.mapService.targetsSubject.getValue();
+        this.initMarkers(L_local);
+
+        setTimeout(() => { if (this.map) { this.map.invalidateSize(); } }, 500);
+        return true; 
+    }
+
+    private setupTargetsSubscription(L_local: any): void {
+        this.targetsSubscription = this.mapService.targets$.subscribe(targets => {
+            this.targets = targets; 
+            
+            targets.forEach(target => {
+                if (target.mapMarker) {
+                    const newIcon = this.mapService.createRankedPinIcon(L_local, target.color, target.rank || 0);
+                    target.mapMarker.setIcon(newIcon);
+                }
+            });
+
+            this.updateUserUI(L_local);
+        });
+        
+        this.searchResultsSubscription = this.mapService.searchResults$.subscribe(results => {
+            this.searchResults = results;
+        });
+
+        this.isSearchingSubscription = this.mapService.isSearching$.subscribe(isSearching => {
+            this.isSearching = isSearching;
+        });
+    }
+
+    private updateUserUI(L_local: any): void {
+        const userLat = this.mapService.userLat;
+        const userLng = this.mapService.userLng;
+        const userGeoHash = this.mapService.userGeoHash;
+        
+        if (userLat === null || userLng === null || !this.map) return;
+
+        if (!this.userMarker) { 
+            const userIcon = this.mapService.createUserIcon(L_local);
+            this.userMarker = L_local.marker([userLat, userLng], { icon: userIcon }).addTo(this.map);
+        } else {
+            this.userMarker.setLatLng([userLat, userLng]);
+        }
+
+        if (userGeoHash && this.mapService.isNgeohashInitialized()) { 
+            if (this.geoHashBounds) this.map.removeLayer(this.geoHashBounds); 
+            const boundsArray = this.mapService.decodeGeoHashBounds(userGeoHash);
+            const bounds: any = [[boundsArray[0], boundsArray[1]], [boundsArray[2], boundsArray[3]]];
+            this.geoHashBounds = this.L.rectangle(bounds, { color: '#4285f4', weight: 2, fillOpacity: 0.15, fillColor: '#4285f4' }).addTo(this.map);
+        }
+    }
+
+
+    // --- Final Lifecycle ---
     ngOnInit(): void {
-        this.searchSubscription = this.searchSubject.pipe(debounceTime(500), distinctUntilChanged()).subscribe(query => this.performSearch(query));
+        // Search debounce handled inside MapService via pushSearchQuery
     }
 
     async ngAfterViewInit(): Promise<void> {
         if (isPlatformBrowser(this.platformId)) {
             const LeafletModule = await import('leaflet');
-            const L = (LeafletModule as any).default || LeafletModule;
-            this.ngeohash = await import('ngeohash');
+            const L_local = (LeafletModule as any).default || LeafletModule;
+            
+            await this.mapService.initializeGeoHash();
 
-            const iconRetinaUrl = 'assets/images/marker-icon-2x.png';
-            const iconUrl = 'assets/images/marker-icon.png';
-            const shadowUrl = 'assets/images/marker-shadow.png';
-            if (L.Icon) {
-                const DefaultIcon = L.Icon.extend({ options: { iconUrl, iconRetinaUrl, shadowUrl, iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], tooltipAnchor: [16, -28], shadowSize: [41, 41] } });
-                L.Marker.prototype.options.icon = new (DefaultIcon as any)();
-            }
-            // 🎯 FIX: Push map initialization to the next tick to ensure DOM element is available
             setTimeout(() => {
-                const success = this.initMap(L);
+                const success = this.initMap(L_local);
                 if (success) {
-                    this.startTracking(L);
+                    this.setupTargetsSubscription(L_local);
+                    
+                    if (this.mapService.positionMode === 'GPS') {
+                        this.mapService.startGeolocationTracking(L_local);
+                    } else {
+                        this.submitManualPosition(); 
+                    }
                 }
             }, 200); 
         }
     }
 
     ngOnDestroy(): void {
-        if (this.watchId !== null) navigator.geolocation.clearWatch(this.watchId);
-        if (this.searchSubscription) this.searchSubscription.unsubscribe();
+        this.mapService.stopTracking();
+        if (this.targetsSubscription) this.targetsSubscription.unsubscribe();
+        if (this.searchResultsSubscription) this.searchResultsSubscription.unsubscribe();
+        if (this.isSearchingSubscription) this.isSearchingSubscription.unsubscribe();
         if (this.map) this.map.remove(); 
-    }
-
-    private initMap(L: any): boolean {
-        const mapElement = document.getElementById('map');
-        if (!mapElement) { console.error('Map container not found!'); return false; }
-        const defaultCenter: [number, number] = [13.72766661420566, 100.77253069896474];
-        if (this.map) { this.map.remove(); this.map = null; }
-        this.map = L.map('map', { center: defaultCenter, zoom: 15, zoomControl: false });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(this.map);
-        
-        this.targets.forEach(target => {
-            // Initial pin creation uses the Ranked style with rank 0
-            const targetIcon = this.createRankedPinIcon(L, target.color || '#007bff', 0); 
-            const marker = L.marker(target.latlng, { icon: targetIcon }).addTo(this.map);
-            target.mapMarker = marker;
-            marker.on('click', () => this.onLocationSelect(target));
-        });
-
-        setTimeout(() => { if (this.map) { this.map.invalidateSize(); } }, 500);
-        return true; 
-    }
-
-    public focusOnUser(): void {
-        if (this.map && this.userLat !== null && this.userLng !== null) {
-            this.map.flyTo([this.userLat, this.userLng], 18);
-            this.selectedLocation = null;
-            this.isSheetExpanded = false;
-        }
-    }
-
-    private startTracking(L: any) {
-        if (!navigator.geolocation) { this.errorMessage = "Geolocation not supported"; return; }
-        const options = { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 };
-
-        this.watchId = navigator.geolocation.watchPosition(
-            (pos) => {
-                if (!this.map || !this.ngeohash) return; 
-
-                this.userLat = pos.coords.latitude;
-                this.userLng = pos.coords.longitude;
-                this.userGeoHash = this.ngeohash.encode(this.userLat, this.userLng, 8);
-
-                // Distance Calc & Ranking
-                const userLatLng = L.latLng(this.userLat, this.userLng);
-                this.targets.forEach(target => {
-                    const distanceMeters = userLatLng.distanceTo(L.latLng(target.latlng));
-                    target.distanceText = (distanceMeters < 1000) ? `${Math.round(distanceMeters)} ม.` : `${(distanceMeters / 1000).toFixed(1)} กม.`;
-                    target.distance = distanceMeters;
-                });
-                
-                const sortedTargets = [...this.targets].sort((a, b) => (a.distance || 0) - (b.distance || 0));
-                this.targets = sortedTargets;
-                
-                this.targets.forEach((target, index) => {
-                    const rank = index + 1;
-                    target.rank = rank;
-                    
-                    if (target.mapMarker) {
-                        const newIcon = this.createRankedPinIcon(L, target.color, rank);
-                        target.mapMarker.setIcon(newIcon);
-                    }
-                });
-
-                // User Marker Logic
-                if (!this.userMarker) { 
-                    const userIcon = this.createUserIcon(L);
-                    this.userMarker = L.marker([this.userLat, this.userLng], { icon: userIcon }).addTo(this.map);
-                    this.map.setView([this.userLat, this.userLng], 16);
-                } else {
-                    this.userMarker.setLatLng([this.userLat, this.userLng]);
-                }
-
-                // if (this.geoHashBounds) this.map.removeLayer(this.geoHashBounds); 
-                // const boundsArray = this.ngeohash.decode_bbox(this.userGeoHash); 
-                // const bounds: L.LatLngBoundsExpression = [[boundsArray[0], boundsArray[1]], [boundsArray[2], boundsArray[3]]];
-                // this.geoHashBounds = L.rectangle(bounds, { color: '#4285f4', weight: 2, fillOpacity: 0.15, fillColor: '#4285f4' }).addTo(this.map);
-            },
-            (err) => { console.error("Geolocation error:", err); },
-            options
-        );
     }
 }
